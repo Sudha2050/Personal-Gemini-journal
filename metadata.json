@@ -1,0 +1,6 @@
+{
+  "name": "Personal Gemini Journal",
+  "description": "Enterprise-grade secure AI journaling with Firebase authentication, isolated Firestore persistence, location-aware memories, Year in Review rewind, wellbeing analytics, smart habits, and zero-leakage security posture.",
+  "requestFramePermissions": ["microphone", "geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

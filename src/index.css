@@ -1,0 +1,33 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    background-color: #050505;
+    color: #d1d5db;
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+  
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Space Grotesk', 'Plus Jakarta Sans', sans-serif;
+  }
+
+  .font-serif {
+    font-family: 'Cormorant Garamond', Georgia, serif;
+  }
+
+  /* Custom subtle dark scrollbars */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #050505;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #222;
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #333;
+  }
+}

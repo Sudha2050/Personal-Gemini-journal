@@ -1,0 +1,18 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Zero Cross-User Leakage: Users can only read, create, update, and delete their own isolated subcollections
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+
+      match /{subcollection=**} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
+    }
+
+    // Default fallback: Deny all unauthenticated or unmatched access
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
