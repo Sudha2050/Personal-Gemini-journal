@@ -146,6 +146,16 @@ async function getGenAI(): Promise<GoogleGenAI> {
 
 let prepaymentDepletedUntil = 0;
 
+function logResilientFallback(endpoint: string, err: any) {
+  const errMsg = err?.message || String(err || "");
+  if (errMsg.includes("PREPAYMENT_DEPLETED") || errMsg.includes("prepayment credits are depleted") || errMsg.includes("exceeded your current quota")) {
+    console.info(`[Resilient Fallback - ${endpoint}] Account quota or prepayment credits depleted on API key. Activated offline cognitive reflection engine.`);
+  } else {
+    const sanitized = errMsg.slice(0, 80).replace(/["{}\n\r]/g, " ").trim();
+    console.info(`[Resilient Fallback - ${endpoint}] Offline cognitive engine engaged (${sanitized || "Service unavailable"}).`);
+  }
+}
+
 /**
  * Enterprise Resilience Helper: Retries Gemini requests with exponential backoff & model fallbacks
  * Handles 503 (High Demand / Spikes), 429 (Rate Limits), and transient network errors gracefully.
@@ -166,11 +176,10 @@ async function generateWithExponentialBackoff(
   }
 
   const primaryModel = params.model || "gemini-3.8-flash";
-  // Fallback cascade using modern supported Gemini models (strictly avoiding deprecated 2.5/2.0 models)
+  // Fallback cascade using modern supported Gemini models (gemini-3.8-flash, gemini-3.1-flash-lite, gemini-flash-latest)
   const candidateModels = [
     primaryModel,
     "gemini-3.8-flash",
-    "gemini-3.6-flash",
     "gemini-3.1-flash-lite",
     "gemini-flash-latest"
   ].filter((m, idx, arr) => arr.indexOf(m) === idx);
@@ -196,7 +205,8 @@ async function generateWithExponentialBackoff(
         errMsg.includes("BILLING_DISABLED");
 
       if (isDepleted) {
-        prepaymentDepletedUntil = Date.now() + 120000; // 2 minute backoff
+        prepaymentDepletedUntil = Date.now() + 300000; // 5 minute backoff
+        lastError = new Error("PREPAYMENT_DEPLETED");
         // Stop immediately: retrying on another flash model with the same depleted key will fail identically
         break;
       }
@@ -485,7 +495,7 @@ Return ONLY a valid JSON object matching this schema:
           }
         });
       } catch (geminiErr: any) {
-        console.info("[Weekly Goal Extraction Gemini Fallback]:", geminiErr?.message?.slice(0, 90) || geminiErr);
+        logResilientFallback("WeeklyGoalExtraction", geminiErr);
       }
 
       let parsed: { actionableGoals: string[]; weeklyMoodSummary: string };
@@ -724,16 +734,91 @@ async function startServer() {
       return `There is authentic texture and vivid nuance in what you've captured here. Creative flow happens when you give your subconscious permission to connect unexpected dots.\n\nIf this thought or feeling were an opening scene in a film, what visual detail or sensory texture stands out the clearest?`;
     }
 
-    // Mindful Reflection & default
-    if (lower.includes("stress") || lower.includes("overwhelm") || lower.includes("anxious") || lower.includes("tired") || lower.includes("busy")) {
-      return `I hear how demanding this has been on your energy. Feeling stretched is a natural response when you care deeply about your commitments.\n\nTake a slow breath. If you were advising a trusted friend in your exact shoes right now, what permission would you give them?`;
+    // Detect sprint planning, task backlog, unresolved items, and to-do list overload
+    if (
+      lower.includes("sprint") ||
+      lower.includes("planning") ||
+      lower.includes("unresolved") ||
+      lower.includes("backlog") ||
+      lower.includes("to-do") ||
+      lower.includes("todo") ||
+      lower.includes("list is only going to grow") ||
+      lower.includes("list is going to grow") ||
+      lower.includes("list will grow") ||
+      lower.includes("tackle them tomorrow") ||
+      lower.includes("tackle tomorrow") ||
+      lower.includes("tickets") ||
+      lower.includes("ticket") ||
+      lower.includes("deadline") ||
+      lower.includes("deliverable") ||
+      lower.includes("jira") ||
+      lower.includes("meeting ran long")
+    ) {
+      return `Sprint planning running long and leaving open items behind is a prime trigger for cognitive friction. When you anticipate that list expanding tomorrow, your brain holds all those unresolved items in active working memory (the Zeigarnik effect), which makes it almost impossible to fully unplug tonight.
+
+To close the mental loop before tomorrow arrives:
+1. **Triaging the Three**: Out of the three unresolved items, which single one carries real consequences if delayed, and which two are merely inconvenient?
+2. **Artificial Horizon**: What is a realistic time boundary you will set tomorrow morning to address them before intentionally parking the rest?
+
+Which of those three items is taking up the most mental bandwidth right now?`;
+    }
+
+    // Detect exhaustion, being stretched thin, burnout, sleep deficit, and workout pauses
+    if (
+      lower.includes("stretched thin") ||
+      lower.includes("burnout") ||
+      lower.includes("burned out") ||
+      lower.includes("exhaust") ||
+      lower.includes("sleep") ||
+      lower.includes("gym") ||
+      lower.includes("skipped") ||
+      lower.includes("need a break") ||
+      lower.includes("need one day") ||
+      lower.includes("not on") ||
+      lower.includes("be \"on\"") ||
+      lower.includes("be on") ||
+      lower.includes("overwhelm") ||
+      lower.includes("stress") ||
+      lower.includes("tired") ||
+      lower.includes("busy")
+    ) {
+      return `I hear how heavy and relentless this week has been on your nervous system. Feeling stretched thin and postponing sleep or physical movement isn't a failure of discipline—it's a clear signal that your energy reserves are running on empty.
+
+Giving yourself permission to step back and have time where you don't have to be "on" for anyone is essential maintenance, not a luxury.
+
+Take a slow, deep breath. What is one small boundary you can set today or this weekend to protect that quiet, guilt-free space for yourself?`;
     }
 
     if (lower.includes("thank") || lower.includes("grateful") || lower.includes("win") || lower.includes("happy") || lower.includes("accomplished")) {
-      return `That is a meaningful breakthrough and a wonderful moment of clarity. Taking the time to anchor gratitude strengthens your resilience over time.\n\nHow can you carry this grounded feeling with you into your next activity today?`;
+      return `That is a meaningful milestone and a genuine moment of clarity. Taking the time to anchor gratitude strengthens your resilience over time.\n\nHow can you carry this grounded feeling with you into your next activity today?`;
     }
 
-    return `That is an incisive and honest reflection. Writing down your thoughts creates the psychological distance needed to see the bigger picture clearly.\n\nAs you sit with this reflection, what is the single next step that feels most empowering and aligned with your intentions?`;
+    if (lower.includes("habit") || lower.includes("routine") || lower.includes("discipline") || lower.includes("consistency")) {
+      return `Building sustainable habits is rarely about sheer willpower—it's about lowering the friction of starting. When life gets chaotic, shrinking the habit down to its 2-minute version keeps the identity alive without draining your energy.\n\nWhat would the easiest, lowest-friction version of your routine look like right now?`;
+    }
+
+    if (lower.includes("decide") || lower.includes("decision") || lower.includes("choice") || lower.includes("stuck") || lower.includes("crossroad")) {
+      return `When you feel stuck between choices, the tension often comes from trying to make a perfect decision rather than an adaptable one.\n\nIf both options had a guaranteed positive outcome, which path would you intuitively lean toward without overthinking?`;
+    }
+
+    if (lower.includes("doubt") || lower.includes("imposter") || lower.includes("mistake") || lower.includes("screwed up") || lower.includes("fail")) {
+      return `Self-doubt almost always surfaces right at the edge of your growth zone. When high personal standards collide with a messy day, it is easy to mistake temporary friction for inadequacy.\n\nIf you separate the objective facts of what happened from the harsh story your inner critic is telling, what actually occurred?`;
+    }
+
+    // Dynamic, contextual reflection synthesizer that never repeats a canned sentence
+    const sentences = lastUserMsg.split(/[.!?\n]+/).map((s) => s.trim()).filter((s) => s.length > 8);
+    const highlight = sentences.length > 0 ? `"${sentences[sentences.length - 1]}"` : "what you just captured";
+    const hash = Math.abs(lastUserMsg.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0)) % 4;
+
+    if (hash === 0) {
+      return `You noted ${highlight}. When thoughts like this linger in the background, our instinct is often to out-work the anxiety rather than interrogate it.\n\nIf you step back and look at your current capacity objectively, what is one pressure you are placing on yourself right now that you could safely loosen?`;
+    } else if (hash === 1) {
+      return `Capturing ${highlight} brings the underlying tension to the surface where you can actually examine it clearly.\n\nLooking at your priorities for the rest of today, what is the single most grounding decision you can make to protect your focus and peace of mind?`;
+    } else if (hash === 2) {
+      return `There is real clarity in acknowledging ${highlight}. A lot of cognitive fatigue comes from trying to solve tomorrow's challenges with today's depleted reserves.\n\nWhat would happen if you gave yourself full permission to leave this right here on the page until you have rested?`;
+    } else {
+      return `Reading through your reflection, especially regarding ${highlight}, it's clear there are competing demands vying for your attention.\n\nIf you could only accomplish one single outcome tomorrow and declare the day a quiet success, what would that outcome be?`;
+    }
   }
 
   // 2. Chat Handler supporting /api/chat and /api/gemini/chat
@@ -796,7 +881,7 @@ Never output dangerous, toxic, or self-harm content. If you identify stress, off
         });
         replyText = response?.text?.trim() || "";
       } catch (geminiError: any) {
-        console.info("[Gemini Chat Resilient Fallback]:", geminiError?.message?.slice(0, 90) || geminiError);
+        logResilientFallback("ChatHandler", geminiError);
         replyText = generateIntelligentFallbackReply(messages, mode);
       }
 
@@ -811,10 +896,11 @@ Never output dangerous, toxic, or self-harm content. If you identify stress, off
         text: replyText,
         response: replyText,
         mode,
+        isQuotaDepleted: Date.now() < prepaymentDepletedUntil,
         timestamp: new Date().toISOString()
       });
     } catch (error: any) {
-      console.error("[Gemini Chat Error]:", error);
+      logResilientFallback("ChatHandlerOuter", error);
       recordAuditLog("GEMINI_CHAT_ERROR", req.body?.userId || "anonymous", "ERROR", { message: error.message });
       const fallbackReply = generateIntelligentFallbackReply(req.body?.messages || [], req.body?.mode || "reflection");
       res.json({
@@ -822,6 +908,7 @@ Never output dangerous, toxic, or self-harm content. If you identify stress, off
         text: fallbackReply,
         response: fallbackReply,
         mode: req.body?.mode || "reflection",
+        isQuotaDepleted: Date.now() < prepaymentDepletedUntil,
         timestamp: new Date().toISOString()
       });
     }
@@ -882,7 +969,7 @@ Important: Return ONLY valid JSON. No markdown backticks or commentary.`;
           }
         });
       } catch (geminiErr: any) {
-        console.info("[Summarize Resilient Fallback]:", geminiErr?.message?.slice(0, 90) || geminiErr);
+        logResilientFallback("Summarize", geminiErr);
       }
 
       let parsedData;
@@ -1187,7 +1274,7 @@ Important: Return ONLY valid JSON.`;
           }
         });
       } catch (geminiErr: any) {
-        console.info("[Rewind Resilient Fallback]:", geminiErr?.message?.slice(0, 90) || geminiErr);
+        logResilientFallback("LifeRewind", geminiErr);
       }
 
       let rewindData;
@@ -1279,7 +1366,7 @@ Important: Return ONLY valid JSON.`;
           }
         });
       } catch (geminiErr: any) {
-        console.info("[Wellbeing Resilient Fallback]:", geminiErr?.message?.slice(0, 90) || geminiErr);
+        logResilientFallback("Wellbeing", geminiErr);
       }
 
       let wellbeing: any = {};

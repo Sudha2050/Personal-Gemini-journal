@@ -9,7 +9,10 @@ import {
   ArrowRight,
   AlertCircle,
   CheckCircle2,
-  Fingerprint
+  Fingerprint,
+  Copy,
+  ExternalLink,
+  Globe
 } from "lucide-react";
 import {
   signInWithGoogle,
@@ -32,12 +35,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
+  const [unauthorizedDomain, setUnauthorizedDomain] = useState<string | null>(null);
+  const [domainCopied, setDomainCopied] = useState(false);
 
   if (!isOpen) return null;
 
   const handleGoogleAuth = async () => {
     setLoading(true);
     setErrorMessage("");
+    setUnauthorizedDomain(null);
     try {
       const user = await signInWithGoogle();
       sendAuditLog("AUTH_LOGIN_GOOGLE", user.uid, "SUCCESS", { email: user.email ? "provided" : "none" });
@@ -45,7 +51,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
       onClose();
     } catch (err: any) {
       console.error("Google Sign-In Error:", err);
-      setErrorMessage(err.message || "Failed to sign in with Google.");
+      const errStr = String(err?.message || "");
+      if (err?.code === "auth/unauthorized-domain" || errStr.includes("unauthorized-domain")) {
+        const currentHost = window.location.hostname;
+        setUnauthorizedDomain(currentHost);
+        setErrorMessage(
+          `Domain "${currentHost}" is not yet in Firebase's Authorized Domains list. Follow the steps below or use Email / Guest sign-in.`
+        );
+      } else {
+        setErrorMessage(err.message || "Failed to sign in with Google.");
+      }
       sendAuditLog("AUTH_LOGIN_GOOGLE_FAIL", "unknown", "ERROR", { error: err.code });
     } finally {
       setLoading(false);
@@ -141,9 +156,49 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
 
         {/* Error Alert */}
         {errorMessage && (
-          <div className="mb-4 flex items-center gap-2 rounded-lg border border-red-500/30 bg-red-950/40 p-3 text-xs text-red-300">
-            <AlertCircle className="h-4 w-4 shrink-0 text-red-400" />
-            <span>{errorMessage}</span>
+          <div className="mb-4 rounded-lg border border-red-500/30 bg-red-950/40 p-3 text-xs text-red-300">
+            <div className="flex items-start gap-2">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" />
+              <div className="flex-1 space-y-2">
+                <div>{errorMessage}</div>
+                {unauthorizedDomain && (
+                  <div className="mt-2 space-y-2 rounded-md border border-amber-500/20 bg-amber-950/30 p-2.5 text-left text-[11px] text-amber-200">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="flex items-center gap-1.5 font-medium text-amber-300">
+                        <Globe className="h-3.5 w-3.5" /> Domain to authorize:
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard.writeText(unauthorizedDomain);
+                          setDomainCopied(true);
+                          setTimeout(() => setDomainCopied(false), 2000);
+                        }}
+                        className="flex items-center gap-1 rounded bg-amber-500/20 px-2 py-0.5 text-[10px] font-semibold text-amber-200 transition hover:bg-amber-500/30"
+                      >
+                        <Copy className="h-3 w-3" />
+                        {domainCopied ? "Copied!" : "Copy Domain"}
+                      </button>
+                    </div>
+                    <code className="block rounded bg-black/40 px-2 py-1 font-mono text-[11px] text-amber-100 break-all">
+                      {unauthorizedDomain}
+                    </code>
+                    <p className="text-[10px] text-amber-300/80 leading-relaxed">
+                      <strong>Fix in 30 seconds:</strong> In your{" "}
+                      <a
+                        href="https://console.firebase.google.com/project/personal-gemini-journal-68693/authentication/settings"
+                        target="_blank"
+                        rel="noreferrer"
+                        className="underline inline-flex items-center gap-0.5 text-amber-200 hover:text-white"
+                      >
+                        Firebase Console <ExternalLink className="h-2.5 w-2.5" />
+                      </a>
+                      , open <em>Authentication &gt; Settings &gt; Authorized domains</em>, click <strong>Add domain</strong>, and paste this hostname.
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
         )}
 

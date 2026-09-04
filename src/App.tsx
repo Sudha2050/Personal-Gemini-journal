@@ -129,13 +129,14 @@ export default function App() {
             </div>
           ) : (
             <>
-              {activeTab === "workspace" && (
+              {/* Keep JournalWorkspace mounted so active conversations, typed drafts, and generating responses are never erased on tab switch */}
+              <div className={activeTab === "workspace" ? "block" : "hidden"}>
                 <JournalWorkspace
                   user={user}
                   onOpenAuth={() => setIsAuthModalOpen(true)}
                   onEntrySaved={handleEntrySaved}
                 />
-              )}
+              </div>
 
               {activeTab === "archive" && (
                 <JournalArchive

@@ -29,7 +29,8 @@ import {
   Info,
   MapPin,
   Briefcase,
-  Navigation
+  Navigation,
+  AlertTriangle
 } from "lucide-react";
 import confetti from "canvas-confetti";
 import Markdown from "react-markdown";
@@ -109,21 +110,97 @@ export const JournalWorkspace: React.FC<JournalWorkspaceProps> = ({
   onEntrySaved,
   initialEntry
 }) => {
-  const [sessionTitle, setSessionTitle] = useState("Midnight Reflection");
-  const [mode, setMode] = useState<JournalMode>("reflection");
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: "initial-1",
-      role: "assistant",
-      content:
-        "Hello! I am your **Personal Gemini Journal** companion. Whether you're untangling a complex dilemma, reflecting on a milestone, or planning your next sprint — what is top of mind for you today?",
-      timestamp: Date.now()
-    }
-  ]);
-  const [inputPrompt, setInputPrompt] = useState("");
+  const draftKey = `gemini_journal_draft_${user?.uid || "guest"}`;
+
+  const [sessionTitle, setSessionTitle] = useState(() => {
+    try {
+      const saved = localStorage.getItem(`gemini_journal_draft_${user?.uid || "guest"}`);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.sessionTitle) return parsed.sessionTitle;
+      }
+    } catch (e) {}
+    return "Midnight Reflection";
+  });
+
+  const [mode, setMode] = useState<JournalMode>(() => {
+    try {
+      const saved = localStorage.getItem(`gemini_journal_draft_${user?.uid || "guest"}`);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.mode) return parsed.mode;
+      }
+    } catch (e) {}
+    return "reflection";
+  });
+
+  const [messages, setMessages] = useState<ChatMessage[]>(() => {
+    try {
+      const saved = localStorage.getItem(`gemini_journal_draft_${user?.uid || "guest"}`);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed.messages) && parsed.messages.length > 0) {
+          return parsed.messages;
+        }
+      }
+    } catch (e) {}
+    return [
+      {
+        id: "initial-1",
+        role: "assistant",
+        content:
+          "Hello! I am your **Personal Gemini Journal** companion. Whether you're untangling a complex dilemma, reflecting on a milestone, or planning your next sprint — what is top of mind for you today?",
+        timestamp: Date.now()
+      }
+    ];
+  });
+
+  const [inputPrompt, setInputPrompt] = useState(() => {
+    try {
+      const saved = localStorage.getItem(`gemini_journal_draft_${user?.uid || "guest"}`);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (typeof parsed.inputPrompt === "string") return parsed.inputPrompt;
+      }
+    } catch (e) {}
+    return "";
+  });
+
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [isSummarizing, setIsSummarizing] = useState(false);
-  const [insights, setInsights] = useState<JournalInsights | null>(null);
+  const [insights, setInsights] = useState<JournalInsights | null>(() => {
+    try {
+      const saved = localStorage.getItem(`gemini_journal_draft_${user?.uid || "guest"}`);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.insights) return parsed.insights;
+      }
+    } catch (e) {}
+    return null;
+  });
+
+  // Automatically save in-progress session to localStorage so changing tabs or refreshes never lose work
+  useEffect(() => {
+    try {
+      const hasMeaningfulContent =
+        messages.some((m) => m.role === "user") ||
+        inputPrompt.trim().length > 0 ||
+        insights !== null;
+
+      if (hasMeaningfulContent) {
+        localStorage.setItem(
+          draftKey,
+          JSON.stringify({
+            messages,
+            sessionTitle,
+            mode,
+            inputPrompt,
+            insights
+          })
+        );
+      }
+    } catch (e) {}
+  }, [messages, sessionTitle, mode, inputPrompt, insights, draftKey]);
 
   // Security and Privacy Toggles
   const [piiFilterEnabled, setPiiFilterEnabled] = useState(true);
@@ -142,6 +219,7 @@ export const JournalWorkspace: React.FC<JournalWorkspaceProps> = ({
   const [copiedSummary, setCopiedSummary] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [isQuotaNoticeVisible, setIsQuotaNoticeVisible] = useState(false);
 
   // Geolocation Tagging State
   const [locationTag, setLocationTag] = useState<GeoLocationTag | null>(() => {
@@ -296,6 +374,10 @@ export const JournalWorkspace: React.FC<JournalWorkspaceProps> = ({
 
       const data = await response.json();
 
+      if (data.isQuotaDepleted) {
+        setIsQuotaNoticeVisible(true);
+      }
+
       if (!response.ok) {
         throw new Error(data.error || "Failed to generate Gemini response.");
       }
@@ -380,11 +462,16 @@ export const JournalWorkspace: React.FC<JournalWorkspaceProps> = ({
         createdAt: Date.now(),
         updatedAt: Date.now(),
         tags: insights?.suggestedTags || ["#journal", `#${mode}`],
-        insights: insights || undefined,
-        location: locationTag || undefined,
         isPinned: false,
         isEncryptedVault: isVaultLocked
       };
+
+      if (insights) {
+        payloadToSave.insights = insights;
+      }
+      if (locationTag) {
+        payloadToSave.location = locationTag;
+      }
 
       if (isVaultLocked) {
         if (!vaultPasscode || vaultPasscode.length < 4) {
@@ -408,6 +495,9 @@ export const JournalWorkspace: React.FC<JournalWorkspaceProps> = ({
       }
 
       await saveUserJournalEntry(user.uid, payloadToSave as JournalEntry);
+      try {
+        localStorage.removeItem(draftKey);
+      } catch (e) {}
       sendAuditLog("JOURNAL_ENTRY_SAVED", user.uid, "SUCCESS", {
         isVaultLocked,
         mode,
@@ -452,6 +542,9 @@ export const JournalWorkspace: React.FC<JournalWorkspaceProps> = ({
 
   const handleResetSession = () => {
     if (confirm("Reset current journaling session and start fresh?")) {
+      try {
+        localStorage.removeItem(draftKey);
+      } catch (e) {}
       setMessages([
         {
           id: "initial-reset",
@@ -462,6 +555,7 @@ export const JournalWorkspace: React.FC<JournalWorkspaceProps> = ({
       ]);
       setInsights(null);
       setSessionTitle("New Journal Session");
+      setInputPrompt("");
     }
   };
 
@@ -711,15 +805,40 @@ export const JournalWorkspace: React.FC<JournalWorkspaceProps> = ({
               <span className="text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">
                 Gemini Thought Partner
               </span>
-              <span className="rounded-full bg-teal-950/60 border border-teal-500/30 px-2 py-0.5 text-[10px] font-semibold text-teal-300">
-                gemini-3.8-flash
-              </span>
+              {isQuotaNoticeVisible ? (
+                <span className="rounded-full bg-amber-950/60 border border-amber-500/40 px-2 py-0.5 text-[10px] font-semibold text-amber-300">
+                  Offline Cognitive Mode
+                </span>
+              ) : (
+                <span className="rounded-full bg-teal-950/60 border border-teal-500/30 px-2 py-0.5 text-[10px] font-semibold text-teal-300">
+                  gemini-3.8-flash
+                </span>
+              )}
             </div>
 
             <div className="text-[11px] text-slate-500 font-mono">
               {messages.length} {messages.length === 1 ? "turn" : "turns"}
             </div>
           </div>
+
+          {/* Quota & Prepayment Notice Banner */}
+          {isQuotaNoticeVisible && (
+            <div className="mx-4 mt-3 flex items-center justify-between rounded-lg border border-amber-500/30 bg-amber-950/30 px-3 py-2 text-xs text-amber-200 animate-fadeIn">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400" />
+                <span>
+                  <strong>API Notice:</strong> Gemini prepayment credits are depleted for this project. Running in <strong>Offline Cognitive Reflection</strong> mode. Top up credits in AI Studio to re-enable live streaming.
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsQuotaNoticeVisible(false)}
+                className="ml-2 text-amber-400 hover:text-white text-base leading-none"
+              >
+                ×
+              </button>
+            </div>
+          )}
 
           {/* Chat Messages Scrollable Area */}
           <div className="h-[460px] space-y-4 overflow-y-auto p-4 sm:p-6 bg-gradient-to-b from-[#0a0a0a] to-[#050505]">
