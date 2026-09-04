@@ -1,4 +1,4 @@
-# Personal Gemini Journal (Gemini Vault)
+# Personal Gemini Journal
 
 [![Google Cloud Run](https://img.shields.io/badge/Google_Cloud_Run-Ready-4285F4?logo=google-cloud&logoColor=white)](https://cloud.google.com/run)
 [![Google Gemini API](https://img.shields.io/badge/Gemini_API-3.8_Flash_|_3.6_Flash-blue?logo=google&logoColor=white)](https://ai.google.dev/)

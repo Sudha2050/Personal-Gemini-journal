@@ -211,7 +211,7 @@ export default function App() {
       <footer className="border-t border-white/10 bg-[#080808] py-6 px-4 text-center text-xs text-slate-500">
         <div className="mx-auto max-w-7xl flex flex-col sm:flex-row items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <span className="font-medium tracking-wider uppercase text-[11px] text-slate-400">Gemini Vault</span>
+            <span className="font-medium tracking-wider uppercase text-[11px] text-slate-400">Personal Gemini Journal</span>
             <span>•</span>
             <span className="text-teal-400">Google AI Studio Ideathon</span>
           </div>

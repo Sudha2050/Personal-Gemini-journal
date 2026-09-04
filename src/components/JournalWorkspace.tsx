@@ -843,7 +843,7 @@ export const JournalWorkspace: React.FC<JournalWorkspaceProps> = ({
                     handleSendMessage();
                   }
                 }}
-                placeholder="Write to Gemini Vault (Shift+Enter for new line)..."
+                placeholder="Write to Personal Gemini Journal (Shift+Enter for new line)..."
                 className="w-full resize-none rounded-2xl border border-white/10 bg-[#111] py-3 pl-4 pr-24 text-sm text-white placeholder-slate-600 focus:border-teal-500/50 focus:outline-none transition-colors"
               />
 

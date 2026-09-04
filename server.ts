@@ -6,7 +6,7 @@ import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
 import cron from "node-cron";
 import { initializeApp, getApps, getApp } from "firebase-admin/app";
-import { getFirestore as getAdminFirestore } from "firebase-admin/firestore";
+import { getFirestore as getAdminFirestore, FieldValue } from "firebase-admin/firestore";
 
 dotenv.config();
 
@@ -83,9 +83,45 @@ class SecretManagerService {
     return "";
   }
 
+  public static async getCronSecret(): Promise<string> {
+    if (this.secretCache.has("cron-secret")) {
+      return this.secretCache.get("cron-secret") || "";
+    }
+    const envVal = process.env.CRON_SECRET || process.env.cron_secret || "";
+    if (envVal) {
+      this.secretCache.set("cron-secret", envVal.trim());
+      return envVal.trim();
+    }
+    const gcpVal = await this.fetchSecretFromGCP("cron-secret");
+    if (gcpVal) {
+      this.secretCache.set("cron-secret", gcpVal);
+      return gcpVal;
+    }
+    const gcpValUpper = await this.fetchSecretFromGCP("CRON_SECRET");
+    if (gcpValUpper) {
+      this.secretCache.set("cron-secret", gcpValUpper);
+      return gcpValUpper;
+    }
+    return "";
+  }
+
   public static isConfigured(): boolean {
     return Boolean(this.getGeminiApiKey());
   }
+}
+
+/**
+ * Sanitizes outbound Discord webhook message to neutralize user/role mentions and formatting exploits.
+ */
+function sanitizeDiscordWellnessMessage(text: string): string {
+  return text
+    .replace(/@everyone/gi, "[everyone]")
+    .replace(/@here/gi, "[here]")
+    .replace(/<@!?[0-9]+>/g, "[mention]")
+    .replace(/<@&[0-9]+>/g, "[role]")
+    .replace(/`/g, "")
+    .trim()
+    .slice(0, 500);
 }
 
 // Lazy Gemini Client Provider
@@ -1364,6 +1400,261 @@ Important: Return ONLY valid JSON.`;
       });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
+    }
+  });
+
+  // 12. Proactive Wellness Agent - Automated Weekly Check-in (Cloud Scheduler Triggered)
+  app.post("/agent/wellness-check", rateLimitMiddleware(10, 60000), async (req: Request, res: Response) => {
+    // 1. Authenticate the caller via x-cron-secret header
+    const inboundSecret = req.headers["x-cron-secret"];
+    if (!inboundSecret || typeof inboundSecret !== "string") {
+      recordAuditLog("WELLNESS_AGENT_UNAUTHORIZED", "scheduler", "DENIED", { reason: "Missing x-cron-secret header" });
+      return res.status(401).json({ error: "Missing required authentication header" });
+    }
+
+    let expectedSecret = "";
+    try {
+      expectedSecret = await SecretManagerService.getCronSecret();
+    } catch (secretErr: any) {
+      console.error("[WellnessAgent] Failed to retrieve cron-secret from Secret Manager:", secretErr);
+      return res.status(500).json({ error: "Security configuration error: cron-secret unavailable" });
+    }
+
+    if (!expectedSecret || inboundSecret !== expectedSecret) {
+      recordAuditLog("WELLNESS_AGENT_FORBIDDEN", "scheduler", "DENIED", { reason: "Invalid cron secret" });
+      return res.status(403).json({ error: "Invalid cron secret authorization" });
+    }
+
+    const db = getAdminDb();
+    if (!db) {
+      return res.status(500).json({ error: "Database service unavailable" });
+    }
+
+    let ai: GoogleGenAI;
+    try {
+      ai = await getGenAI();
+    } catch (aiErr: any) {
+      console.error("[WellnessAgent] Failed to initialize Gemini client:", aiErr);
+      return res.status(500).json({ error: "Gemini AI client initialization failed" });
+    }
+
+    const discordWebhookUrl = await SecretManagerService.getDiscordWebhookUrl();
+
+    const stats = {
+      totalEvaluated: 0,
+      skippedRecentlyProcessed: 0,
+      insufficientData: 0,
+      notified: 0,
+      notWarranted: 0,
+      errors: 0,
+    };
+
+    try {
+      // Discover users strictly per-user
+      const userIds = new Set<string>();
+      try {
+        const usersSnapshot = await db.collection("users").get();
+        usersSnapshot.forEach((d) => userIds.add(d.id));
+      } catch (userListErr) {
+        console.warn("[WellnessAgent] Direct /users fetch error:", userListErr);
+      }
+
+      try {
+        const trendsSnapshot = await db.collectionGroup("moodTrends").get();
+        trendsSnapshot.forEach((d) => {
+          const parentUser = d.ref.parent.parent;
+          if (parentUser?.id) userIds.add(parentUser.id);
+        });
+      } catch (groupErr) {
+        // Fallback or empty
+      }
+
+      const SIX_DAYS_MS = 6 * 24 * 60 * 60 * 1000;
+      const now = Date.now();
+
+      for (const uid of Array.from(userIds)) {
+        stats.totalEvaluated++;
+
+        try {
+          // a. Idempotency check: Skip if already ran for this user within the last 6 days
+          const auditRef = db.collection("users").doc(uid).collection("wellnessAudit");
+          const recentAudit = await auditRef.orderBy("timestamp", "desc").limit(1).get();
+
+          if (!recentAudit.empty) {
+            const auditData = recentAudit.docs[0].data();
+            const lastRunTime = auditData.timestamp?.toMillis ? auditData.timestamp.toMillis() : (typeof auditData.timestamp === "number" ? auditData.timestamp : 0);
+            if (now - lastRunTime < SIX_DAYS_MS) {
+              stats.skippedRecentlyProcessed++;
+              continue;
+            }
+          }
+
+          // b. Read ONLY that user's own last 7 moodTrends documents — never a cross-user query
+          const moodSnapshot = await db
+            .collection("users")
+            .doc(uid)
+            .collection("moodTrends")
+            .orderBy("createdAt", "desc")
+            .limit(7)
+            .get();
+
+          if (moodSnapshot.empty || moodSnapshot.size < 1) {
+            stats.insufficientData++;
+            continue;
+          }
+
+          const moodData = moodSnapshot.docs.map((doc) => {
+            const d = doc.data();
+            return {
+              label: String(d.label || "Neutral"),
+              intensity: Number(d.intensity || 5),
+            };
+          });
+
+          // c. Call Gemini to DECIDE (Strict JSON output: { shouldNotify: boolean, reason: string })
+          const decisionPrompt = `You are a clinical wellness supervisor evaluating anonymized mood trend points for a private journaling user.
+Mood trend history (up to 7 most recent entries, newest first):
+${JSON.stringify(moodData)}
+
+Decide whether a gentle, supportive, non-intrusive check-in is warranted (for example: persistent high stress, steep emotional decline, protracted low energy, or noticeable distress).
+Return ONLY a valid JSON object matching the required schema.`;
+
+          let decisionRaw: any = null;
+          try {
+            decisionRaw = await generateWithExponentialBackoff(ai, {
+              model: "gemini-3.8-flash",
+              contents: [{ role: "user", parts: [{ text: decisionPrompt }] }],
+              config: {
+                responseMimeType: "application/json",
+                responseSchema: {
+                  type: "OBJECT",
+                  properties: {
+                    shouldNotify: { type: "BOOLEAN" },
+                    reason: { type: "STRING" },
+                  },
+                  required: ["shouldNotify", "reason"],
+                },
+                temperature: 0.2,
+                maxOutputTokens: 300,
+              },
+            });
+          } catch (decisionErr: any) {
+            console.warn(`[WellnessAgent] Decision generation failed for user usr_${uid.slice(0, 6)}***:`, decisionErr.message);
+            stats.errors++;
+            continue;
+          }
+
+          let decision: { shouldNotify: boolean; reason: string } = { shouldNotify: false, reason: "Baseline" };
+          try {
+            decision = JSON.parse(decisionRaw?.text?.trim() || "{}");
+          } catch (parseErr) {
+            decision = { shouldNotify: false, reason: "Parse error fallback" };
+          }
+
+          let wasNotified = false;
+
+          // d. If shouldNotify is true, call Gemini again to COMPOSE message
+          if (decision.shouldNotify === true) {
+            const compositionPrompt = `You are a warm, thoughtful, supportive peer mentor.
+Reason for check-in: "${decision.reason}".
+Write a warm, non-clinical, non-diagnostic check-in message.
+STRICT CONSTRAINTS:
+1. Maximum 3 sentences.
+2. Absolutely no clinical diagnoses, psychiatric terms, or medical jargon.
+3. Warm, inviting, and validating tone.`;
+
+            let compositionRaw: any = null;
+            try {
+              compositionRaw = await generateWithExponentialBackoff(ai, {
+                model: "gemini-3.8-flash",
+                contents: [{ role: "user", parts: [{ text: compositionPrompt }] }],
+                config: {
+                  temperature: 0.4,
+                  maxOutputTokens: 300,
+                },
+              });
+            } catch (compErr: any) {
+              console.warn(`[WellnessAgent] Composition generation failed for user usr_${uid.slice(0, 6)}***:`, compErr.message);
+            }
+
+            const rawMessage = compositionRaw?.text?.trim() || "Thinking of you. Take a moment to rest and breathe today.";
+            // e. Sanitize composed message (strip backticks and @ mentions) and cap length to 500
+            const safeMessage = sanitizeDiscordWellnessMessage(rawMessage);
+
+            if (discordWebhookUrl && discordWebhookUrl.startsWith("http")) {
+              try {
+                const webhookRes = await fetch(discordWebhookUrl, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    embeds: [
+                      {
+                        title: "🌱 Proactive Wellness Check-In",
+                        description: safeMessage,
+                        color: 0x4f46e5,
+                        fields: [
+                          {
+                            name: "👤 User ID",
+                            value: `\`usr_${uid.slice(0, 6)}***\``,
+                            inline: true,
+                          },
+                          {
+                            name: "📊 Trend Sample",
+                            value: `${moodData.length} records evaluated`,
+                            inline: true,
+                          },
+                        ],
+                        footer: { text: "Personal Gemini Journal • Proactive Wellness Agent" },
+                        timestamp: new Date().toISOString(),
+                      },
+                    ],
+                  }),
+                });
+
+                if (webhookRes.ok) {
+                  wasNotified = true;
+                  stats.notified++;
+                } else {
+                  console.warn(`[WellnessAgent] Discord webhook returned ${webhookRes.status}`);
+                }
+              } catch (discordErr: any) {
+                console.warn(`[WellnessAgent] Discord webhook dispatch exception:`, discordErr.message);
+              }
+            }
+          } else {
+            stats.notWarranted++;
+          }
+
+          // f. Record run outcome in Firestore (never log mood data or message content in application logs)
+          await auditRef.add({
+            uid,
+            timestamp: FieldValue.serverTimestamp(),
+            notified: wasNotified,
+          });
+
+          // Log ONLY the outcome, never the mood data or message content in application logs
+          recordAuditLog("WELLNESS_AGENT_CHECK_COMPLETED", uid, "SUCCESS", {
+            notified: wasNotified,
+          });
+        } catch (userErr: any) {
+          // 4. Process users independently — one user's failure should not stop processing of others
+          stats.errors++;
+          console.error(`[WellnessAgent] Error processing user run for usr_${uid.slice(0, 6)}***:`, userErr.message);
+          recordAuditLog("WELLNESS_AGENT_USER_ERROR", uid, "ERROR", {
+            message: userErr.message,
+          });
+        }
+      }
+
+      // 5. Return JSON summary of how many users were processed
+      res.status(200).json({
+        status: "complete",
+        timestamp: new Date().toISOString(),
+        summary: stats,
+      });
+    } catch (batchErr: any) {
+      console.error("[WellnessAgent] Critical failure during batch processing:", batchErr);
+      res.status(500).json({ error: "Failed to complete wellness check batch" });
     }
   });
 

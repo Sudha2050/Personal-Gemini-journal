@@ -1,0 +1,367 @@
+================================================================================
+GEMINI VAULT - ARCHITECTURAL REVIEW & IDEATHON SUBMISSION DOSSIER
+Prepared for: Google Cloud Run AI Challenge (Ideathon)
+Project: Personal Gemini Journal (Gemini Vault)
+Security Architecture & Engineering Review
+================================================================================
+
+TABLE OF CONTENTS
+--------------------------------------------------------------------------------
+1. EXECUTIVE SUMMARY & THREAT MODEL ANALYSIS
+2. FIRESTORE GEOSPATIAL INDEXING & QUERY OPTIMIZATION
+3. WEEKLY CRON & DISCORD DISPATCH: ZERO-KNOWLEDGE VAULT HANDLING
+4. STRICT PROMPT ENFORCEMENT (WORKDAY DEBRIEF & SPECIALIZED MODES)
+5. PRE-DEPLOYMENT SECURITY HARDENING & RUNTIME VERIFICATION CHECKLIST
+6. COMPLETE JUDGES' SUBMISSION README (MARKDOWN READY)
+7. CLOUD RUN & SECRET MANAGER VERIFICATION COMMANDS
+
+================================================================================
+1. EXECUTIVE SUMMARY & THREAT MODEL ANALYSIS
+================================================================================
+
+Gemini Vault represents a zero-trust, multi-tenant architecture designed to
+process sensitive cognitive reflections and personal journals without exposing
+plain-text data or credentials to unauthorized parties.
+
+Threat Model (STRIDE Assessment):
+--------------------------------------------------------------------------------
+- Spoofing Identity:
+  * Risk: Attacker sends forged requests to backend API or simulates another user.
+  * Mitigation: Inbound authorization headers are bound to Firebase Auth JWTs.
+    Client-side sessions are validated; API endpoints verify the caller's UID.
+
+- Tampering with Data:
+  * Risk: Malicious manipulation of sentiment scores, goals, or journal entries.
+  * Mitigation: Firestore Security Rules enforce `request.auth.uid == userId`
+    on all paths. The server validates incoming payload shapes and lengths.
+
+- Repudiation:
+  * Risk: Deniability of access or administrative actions.
+  * Mitigation: Structured audit logging captures timestamps, action names, and
+    anonymized user identifiers. PII and plaintext entries are scrubbed before logging.
+
+- Information Disclosure:
+  * Risk: Cross-tenant data leakage or API key exposure in client bundles.
+  * Mitigation: Zero keys in client bundles. Gemini API key and Discord Webhook
+    URL are retrieved at container runtime from Google Cloud Secret Manager.
+    Firestore path isolation (`users/{userId}/**`) prevents cross-user queries.
+    Client-side Zero-Knowledge AES-256-GCM encryption ensures data remains
+    ciphertext at rest.
+
+- Denial of Service (DoS):
+  * Risk: Repeated heavy prompts exhausting Gemini quota or Cloud Run CPU.
+  * Mitigation: In-memory IP rate limiting, character caps on journal prompts,
+    exponential backoff with circuit breakers on credit depletion.
+
+- Elevation of Privilege:
+  * Risk: Authenticated user attempting to read another user's goals or entries.
+  * Mitigation: Default-deny root rules on Cloud Firestore. Subcollection queries
+    are strictly scoped to the authenticated caller's path.
+
+
+================================================================================
+2. FIRESTORE GEOSPATIAL INDEXING & QUERY OPTIMIZATION
+================================================================================
+
+Issue:
+------
+Firestore is a NoSQL document store that does not natively support multi-attribute
+range queries across latitude and longitude simultaneously without composite
+indexes or geohashing. Attempting to query:
+  `where("location.lat", ">=", minLat).where("location.lng", ">=", minLng)`
+will fail or cause runtime indexing errors.
+
+Architecture Fix & Best Practice:
+---------------------------------
+Option A: Bounding Box with Geohashes (Recommended for High Scale)
+Store a geohash string (e.g., precision 6-8) alongside `lat` and `lng`.
+Query by geohash prefix ranges, then filter exact bounding box in memory.
+
+Option B: Subcollection Client-Side Projection (Optimal for Personal Journals)
+Since all entries are strictly isolated under `/users/{userId}/entries`, each
+user typically possesses between dozens to a few thousand entries.
+1. Query user entries filtered by date range or tag:
+   `db.collection("users").doc(userId).collection("entries").orderBy("createdAt", "desc").limit(100)`
+2. Filter or cluster by coordinates in the Geospatial Memory Explorer canvas.
+
+Required Firestore Composite Index (if ordering by time with location filter):
+In your `firestore.indexes.json`:
+```json
+{
+  "indexes": [
+    {
+      "collectionGroup": "entries",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "hasLocation", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    }
+  ]
+}
+```
+
+
+================================================================================
+3. WEEKLY CRON & DISCORD DISPATCH: ZERO-KNOWLEDGE VAULT HANDLING
+================================================================================
+
+Problem:
+--------
+When Zero-Knowledge AES-256-GCM encryption is activated, entry text is encrypted
+client-side using the user's private PIN/key. The server stores ciphertext
+(e.g., `iv`, `ciphertext`, `tag`). If the weekly cron job passes ciphertext to
+Gemini, the LLM receives unreadable cipher noise, producing gibberish summaries
+and wasting token quota.
+
+Robust Implementation Pattern:
+------------------------------
+1. Inspect the `isEncrypted` or `encryption` flag on each entry document.
+2. Separate entries into:
+   - Plaintext entries: Sent to Gemini for semantic summary and mood extraction.
+   - Encrypted entries: Metadata is aggregated (count, timestamps, mood tags if
+     stored unencrypted), while body content is omitted.
+3. Fallback message when all entries are encrypted:
+   "All entries from this period are protected with Zero-Knowledge Vault
+   encryption. Summary reflects frequency and emotional check-in tags."
+4. Discord Webhook payload structure:
+   - Dispatches a rich embed with color coding.
+   - Truncates fields to conform to Discord's 2048-character limit.
+   - Sanitizes text to prevent webhook markdown injection.
+
+Code Pattern for Weekly Cron Handler:
+```typescript
+interface JournalEntryDoc {
+  id: string;
+  content: string;
+  isEncrypted?: boolean;
+  moodTag?: string;
+  sentimentScore?: number;
+  createdAt: any;
+}
+
+export function prepareEntriesForWeeklySynthesis(entries: JournalEntryDoc[]) {
+  const processableTexts: string[] = [];
+  let encryptedCount = 0;
+  const moodTallies: Record<string, number> = {};
+
+  for (const entry of entries) {
+    if (entry.isEncrypted) {
+      encryptedCount++;
+      if (entry.moodTag) {
+        moodTallies[entry.moodTag] = (moodTallies[entry.moodTag] || 0) + 1;
+      }
+      continue;
+    }
+
+    if (entry.content && entry.content.trim().length > 0) {
+      processableTexts.push(entry.content.trim());
+    }
+    if (entry.moodTag) {
+      moodTallies[entry.moodTag] = (moodTallies[entry.moodTag] || 0) + 1;
+    }
+  }
+
+  return {
+    processableTexts,
+    encryptedCount,
+    totalEntries: entries.length,
+    moodTallies,
+  };
+}
+```
+
+
+================================================================================
+4. STRICT PROMPT ENFORCEMENT (WORKDAY DEBRIEF & SPECIALIZED MODES)
+================================================================================
+
+To guarantee that Gemini strictly outputs the exact required structure
+(e.g., exactly 3 bullet points in "Workday Debrief"), configure system
+instructions and enforce structured schema generation.
+
+Recommended Gemini System Instruction Config:
+```typescript
+const MODE_SYSTEM_INSTRUCTIONS: Record<string, string> = {
+  workday_debrief: `You are an executive debrief partner.
+CRITICAL FORMAT RULES:
+1. Provide an executive summary of 2 sentences maximum.
+2. Provide EXACTLY 3 bullet points highlighting core achievements and obstacles.
+3. Provide EXACTLY 2 concrete action items for tomorrow.
+Do not deviate from this 3-bullet, 2-action format.`,
+
+  stoic_resilience: `You are a Stoic philosopher-mentor.
+CRITICAL FORMAT RULES:
+1. Dichotomy of Control: Explicitly categorize the user's situation into what is within their control and what is not.
+2. Provide EXACTLY 1 grounding Stoic reflection quote or axiom.
+3. Provide EXACTLY 2 mindset shifts.`,
+};
+```
+
+Schema-Enforced JSON Output Mode:
+When strict validation is needed, utilize `responseSchema` or `responseMimeType: "application/json"`:
+```typescript
+const response = await ai.models.generateContent({
+  model: "gemini-3.7-flash",
+  contents: prompt,
+  config: {
+    systemInstruction: MODE_SYSTEM_INSTRUCTIONS[mode],
+    responseMimeType: "application/json",
+    responseSchema: {
+      type: "OBJECT",
+      properties: {
+        executiveSummary: { type: "STRING" },
+        bulletPoints: {
+          type: "ARRAY",
+          items: { type: "STRING" },
+          description: "Must contain exactly 3 concise points."
+        },
+        actionableSteps: {
+          type: "ARRAY",
+          items: { type: "STRING" },
+          description: "Must contain exactly 2 action items."
+        },
+        moodTag: { type: "STRING" },
+        sentimentScore: { type: "NUMBER" }
+      },
+      required: ["executiveSummary", "bulletPoints", "actionableSteps"]
+    }
+  }
+});
+```
+
+
+================================================================================
+5. PRE-DEPLOYMENT SECURITY HARDENING & RUNTIME VERIFICATION
+================================================================================
+
+1. Cloud Run Ingress & Port:
+   - Port MUST be 3000 (standardized in Dockerfile and Express app.listen).
+   - Listen on host "0.0.0.0".
+
+2. Secret Manager Binding:
+   - Mount `GEMINI_API_KEY` and `DISCORD_WEBHOOK_URL` as secret environment variables.
+   - Do NOT pass keys directly as plaintext strings via `--set-env-vars`.
+   - Ensure the Compute Engine default service account has the role:
+     `roles/secretmanager.secretAccessor`.
+
+3. Rate Limiting & Payload Ceilings:
+   - Express body parser ceiling: `express.json({ limit: "1mb" })`.
+   - Rate limit AI endpoints (e.g., 20 requests per minute per IP).
+
+4. Zero PII in Server Logs:
+   - Scrub incoming authorization headers, passwords, and journal bodies before
+     passing objects to `console.log` or Cloud Logging.
+
+5. Cloud Scheduler Endpoint Authentication:
+   - Guard `/api/cron/weekly-summary` with an authorization token or secret header:
+     `if (req.headers["x-cron-secret"] !== process.env.CRON_SECRET) return res.status(401).json({ error: "Unauthorized" });`
+
+
+================================================================================
+6. COMPLETE JUDGES' SUBMISSION README (MARKDOWN READY)
+================================================================================
+
+Below is the complete text for your submission README:
+
+--- START OF README.md ---
+
+# Gemini Vault - Enterprise Personal AI Journal
+
+> **Google Cloud Run AI Challenge (Ideathon) Official Submission**
+> Deployed on Google Cloud Run with Google Gemini 3.7 Flash, Cloud Firestore, and Secret Manager.
+
+## 🌟 Executive Overview
+Gemini Vault is a privacy-first, multi-tenant AI journaling and cognitive debrief companion. It pairs state-of-the-art Google Gemini models with Zero-Knowledge encryption, client-side PII sanitization, geospatial memory mapping, and automated weekly retrospective reporting via Discord webhooks.
+
+## 🛠️ Complete Tech Stack
+- **Frontend**: React (Modern Hooks, Tailwind CSS, Lucide Icons, Canvas Visualizers)
+- **Backend Service**: Node.js & Express running on Google Cloud Run (Containerized with Docker)
+- **AI Intelligence**: Google Gemini 3.7 Flash API (via `@google/genai`)
+- **Persistence**: Google Cloud Firestore (Strict user-locked isolation)
+- **Authentication**: Firebase Auth (Google Sign-In, Email/Password, Anonymous guest preview)
+- **Secret Architecture**: Google Cloud Secret Manager (Zero hardcoded credentials)
+- **External Webhook Gateway**: Discord Webhook integration for weekly retrospectives and retention pings
+- **Background Orchestration**: node-cron internal scheduler + Cloud Scheduler HTTP endpoints
+
+## 🛡️ Security Architecture & Threat Mitigation (OWASP / STRIDE)
+- **Zero-Knowledge Encryption**: Optional client-side AES-256-GCM encryption ensures reflections remain unreadable even to the host database.
+- **Client-Side PII Scrubbing**: Identifies and redacts phone numbers, SSNs, credit card formats, and email addresses prior to AI ingestion.
+- **Multi-Tenant Path Isolation**: All records are anchored to `users/{userId}/**`.
+- **Firestore Security Rules**: Root collections are default-deny; subcollections enforce `request.auth.uid == userId`.
+- **Secret Manager Runtime Injection**: Secrets are mounted into container memory at runtime.
+
+## 🚀 Key Functional Modules
+1. **6 Specialized Reflection Modes**: Daily Reflection, Workday Debrief, Executive Clarity, Emotional Processing, Strategic Brainstorming, and Stoic Resilience.
+2. **Structured Insight Synthesis**: Extracts Executive Summaries, 3 Key Insights, 2 Action Items, Mood Scores, and Sentiment Tags.
+3. **Geospatial Memory Explorer**: Visualizes reflections on an interactive coordinate canvas with cluster rings and city cards.
+4. **Temporal Rewind (Year in Review)**: Generates psychological archetype breakdowns, breakthrough metrics, and guiding mottos.
+5. **Smart Habit Reminders**: Tracks journaling velocity (>24h flags) and issues browser check-in alerts.
+6. **Automated Weekly Retrospectives**: Synthesizes the prior 7 days of entries, extracts goals, and publishes formatted summary cards to Discord.
+
+## 🏷️ Competition Verification
+Deployed to Cloud Run with the mandatory Ideathon tag:
+`dev-tutorial=cloud-run-ai-challenge`
+
+--- END OF README.md ---
+
+
+================================================================================
+7. CLOUD RUN & SECRET MANAGER VERIFICATION COMMANDS
+================================================================================
+
+Run these commands in Google Cloud Shell to build, deploy, and verify:
+
+1. Create Secrets in Google Cloud Secret Manager:
+--------------------------------------------------------------------------------
+echo -n "YOUR_GEMINI_API_KEY" | gcloud secrets create GEMINI_API_KEY \
+  --data-file=- --replication-policy="automatic" 2>/dev/null || \
+echo -n "YOUR_GEMINI_API_KEY" | gcloud secrets versions add GEMINI_API_KEY --data-file=-
+
+echo -n "https://discord.com/api/webhooks/1544964442297602168/mb_SFhAXVpjxou133w8Wlfg1n6PvJp9u1Zed3eYRkNUSRmVwZ5cVeB8mSmbuV4RMKhry" | \
+gcloud secrets create DISCORD_WEBHOOK_URL \
+  --data-file=- --replication-policy="automatic" 2>/dev/null || \
+echo -n "https://discord.com/api/webhooks/1544964442297602168/mb_SFhAXVpjxou133w8Wlfg1n6PvJp9u1Zed3eYRkNUSRmVwZ5cVeB8mSmbuV4RMKhry" | \
+gcloud secrets versions add DISCORD_WEBHOOK_URL --data-file=-
+
+2. Grant IAM Secret Access to Cloud Run:
+--------------------------------------------------------------------------------
+PROJECT_NUM=$(gcloud projects describe personal-gemini-journal-68693 --format="value(projectNumber)")
+
+gcloud secrets add-iam-policy-binding GEMINI_API_KEY \
+  --member="serviceAccount:${PROJECT_NUM}-compute@developer.gserviceaccount.com" \
+  --role="roles/secretmanager.secretAccessor"
+
+gcloud secrets add-iam-policy-binding DISCORD_WEBHOOK_URL \
+  --member="serviceAccount:${PROJECT_NUM}-compute@developer.gserviceaccount.com" \
+  --role="roles/secretmanager.secretAccessor"
+
+3. Build Container Image:
+--------------------------------------------------------------------------------
+gcloud builds submit --tag gcr.io/personal-gemini-journal-68693/gemini-vault
+
+4. Deploy to Cloud Run with Competition Label & Secrets:
+--------------------------------------------------------------------------------
+gcloud run deploy gemini-vault \
+  --image gcr.io/personal-gemini-journal-68693/gemini-vault \
+  --region us-central1 \
+  --platform managed \
+  --allow-unauthenticated \
+  --port 3000 \
+  --labels=dev-tutorial=cloud-run-ai-challenge \
+  --set-secrets="GEMINI_API_KEY=GEMINI_API_KEY:latest,DISCORD_WEBHOOK_URL=DISCORD_WEBHOOK_URL:latest" \
+  --min-instances 0 \
+  --max-instances 10 \
+  --memory 512Mi \
+  --cpu 1
+
+5. Verify Label on Cloud Run:
+--------------------------------------------------------------------------------
+gcloud run services describe gemini-vault --region us-central1 --format="value(labels)"
+
+Expected output:
+dev-tutorial=cloud-run-ai-challenge
+
+================================================================================
+END OF ARCHITECTURAL DOSSIER
+================================================================================

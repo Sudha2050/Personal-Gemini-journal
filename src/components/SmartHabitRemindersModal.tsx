@@ -72,7 +72,7 @@ export const SmartHabitRemindersModal: React.FC<SmartHabitRemindersModalProps> =
       setNotificationPermission(perm);
       if (perm === "granted") {
         setConfig((prev) => ({ ...prev, enableBrowserNotifications: true }));
-        new Notification("Gemini Vault • Habit Engine", {
+        new Notification("Personal Gemini Journal • Habit Engine", {
           body: "Smart notifications enabled! You will be reminded at your scheduled times.",
           icon: "/favicon.ico"
         });
@@ -83,7 +83,7 @@ export const SmartHabitRemindersModal: React.FC<SmartHabitRemindersModalProps> =
   const handleSendTestNotification = () => {
     setTestNotificationSent(true);
     if (notificationPermission === "granted") {
-      new Notification("Gemini Vault • Daily Reflection Reminder", {
+      new Notification("Personal Gemini Journal • Daily Reflection Reminder", {
         body: "Take 2 minutes to record a quick thought and preserve your clarity streak.",
         icon: "/favicon.ico"
       });
