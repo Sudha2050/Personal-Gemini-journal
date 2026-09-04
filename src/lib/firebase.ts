@@ -192,6 +192,17 @@ export function subscribeToUserGoals(
   );
 }
 
+export async function saveUserGoalRecord(userId: string, goalRecord: WeeklyGoalRecord): Promise<void> {
+  if (!userId) throw new Error("Security Violation: User must be authenticated to write goals.");
+  const docRef = doc(db, "users", userId, "goals", goalRecord.id);
+  const payload = sanitizeFirestoreData({
+    ...goalRecord,
+    userId,
+    updatedAt: Date.now()
+  });
+  await setDoc(docRef, payload, { merge: true });
+}
+
 /**
  * GDPR Right-to-Erasure (Data Sovereignty)
  * Irreversibly purges all records within the authenticated user's isolated subcollection.

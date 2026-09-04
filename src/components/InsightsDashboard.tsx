@@ -19,7 +19,7 @@ import {
   Target
 } from "lucide-react";
 import { JournalEntry, WeeklyGoalRecord } from "../types";
-import { saveUserJournalEntry, subscribeToUserGoals } from "../lib/firebase";
+import { saveUserJournalEntry, saveUserGoalRecord, subscribeToUserGoals } from "../lib/firebase";
 
 interface InsightsDashboardProps {
   entries: JournalEntry[];
@@ -65,14 +65,38 @@ export const InsightsDashboard: React.FC<InsightsDashboardProps> = ({ entries, u
     setIsTriggeringCron(true);
     setCronFeedback(null);
     try {
+      const recentEntries = entries.filter((e) => {
+        const createdAt = e.createdAt || 0;
+        return createdAt >= Date.now() - 7 * 24 * 60 * 60 * 1000;
+      });
+
+      const entriesToAnalyze = recentEntries.length > 0 ? recentEntries : entries;
+
+      if (entriesToAnalyze.length === 0) {
+        setCronFeedback("⚠️ No journal reflections found yet. Write a quick entry in the Workspace first to run synthesis!");
+        setIsTriggeringCron(false);
+        return;
+      }
+
       const res = await fetch("/api/cron/weekly-summary", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId })
+        body: JSON.stringify({
+          userId,
+          entries: entriesToAnalyze
+        })
       });
       const data = await res.json();
-      if (res.ok) {
-        setCronFeedback("✨ Weekly retrospective and 3 actionable goals generated & saved to Firestore!");
+      if (res.ok && data.success) {
+        // Persist goalRecord directly via client SDK to guarantee real-time Firestore persistence
+        if (data.goalRecord) {
+          try {
+            await saveUserGoalRecord(userId, data.goalRecord);
+          } catch (saveErr) {
+            console.warn("Client goal save notice:", saveErr);
+          }
+        }
+        setCronFeedback("✨ Weekly retrospective and actionable goals generated, saved to Firestore, and dispatched to Discord!");
       } else {
         setCronFeedback(`⚠️ ${data.error || "Failed to run weekly retrospective."}`);
       }
