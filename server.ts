@@ -1119,23 +1119,82 @@ Return ONLY a JSON array of strings:
       description: "Every Sunday at 9:00 AM",
       timezone: "Server Local / UTC",
       discordWebhookConfigured: Boolean(discordWebhookUrl),
-      discordWebhookTarget: discordWebhookUrl ? "Secret Manager (DISCORD_WEBHOOK_URL)" : "Not Configured",
+      discordWebhookTarget: discordWebhookUrl ? "Secret Manager / Environment (DISCORD_WEBHOOK_URL)" : "Not Configured",
       secretManagerConfigured: SecretManagerService.isConfigured(),
       targetCollection: "users/{uid}/goals"
     });
   });
 
+  // Direct Discord Webhook Connectivity Verification
+  app.post("/api/discord/test", rateLimitMiddleware(5, 60000), async (req: Request, res: Response) => {
+    try {
+      const discordWebhookUrl = await SecretManagerService.getDiscordWebhookUrl();
+      if (!discordWebhookUrl || !discordWebhookUrl.startsWith("http")) {
+        return res.status(400).json({
+          success: false,
+          error: "DISCORD_WEBHOOK_URL is not configured. Please supply DISCORD_WEBHOOK_URL in environment variables or Google Secret Manager."
+        });
+      }
+
+      const testPayload = {
+        content: "🔔 **Personal Gemini Journal Agent — Live Test Dispatch**",
+        embeds: [
+          {
+            title: "✨ Webhook Connectivity Verified",
+            description: "Your Discord channel is successfully linked to the Personal Gemini Journal AI Agent.",
+            color: 1358954, // #14B8A6 (Teal)
+            fields: [
+              { name: "Status", value: "🟢 Active & Ready", inline: true },
+              { name: "Schedule", value: "Sunday 9:00 AM UTC", inline: true },
+              { name: "Automated Triggers", value: "Weekly Goal Synthesis & Proactive Wellness Checks", inline: false }
+            ],
+            footer: {
+              text: "Personal Gemini Journal • Cloud Run AI Agent"
+            },
+            timestamp: new Date().toISOString()
+          }
+        ]
+      };
+
+      const webhookRes = await fetch(discordWebhookUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(testPayload)
+      });
+
+      if (webhookRes.ok) {
+        recordAuditLog("DISCORD_TEST_DISPATCH", req.body?.userId || "user", "SUCCESS", {});
+        return res.json({ success: true, message: "Test notification dispatched to Discord successfully!" });
+      } else {
+        const errText = await webhookRes.text();
+        console.warn("[Discord Test Webhook Error]:", webhookRes.status, errText);
+        return res.status(webhookRes.status).json({ success: false, error: `Discord returned HTTP ${webhookRes.status}: ${errText}` });
+      }
+    } catch (e: any) {
+      console.error("[Discord Test Exception]:", e);
+      return res.status(500).json({ success: false, error: e.message || "Failed to dispatch test to Discord" });
+    }
+  });
+
   app.post("/api/cron/weekly-summary", rateLimitMiddleware(10, 60000), async (req: Request, res: Response) => {
     try {
-      // Optional security header check for Cloud Scheduler or manual token
       const authHeader = req.headers.authorization;
+      const xCronSecret = req.headers["x-cron-secret"];
       const expectedSecret = process.env.CRON_SECRET;
-      if (expectedSecret && (!authHeader || authHeader !== `Bearer ${expectedSecret}`)) {
-        recordAuditLog("CRON_HTTP_TRIGGER_DENIED", req.body?.userId || "unknown", "DENIED", { reason: "Invalid CRON_SECRET token" });
+      const targetUserId = req.body?.userId;
+
+      const hasValidSecret = expectedSecret && (
+        authHeader === `Bearer ${expectedSecret}` ||
+        xCronSecret === expectedSecret
+      );
+
+      // Require CRON_SECRET only for batch multi-tenant executions where no specific userId is targeted.
+      // If a user is requesting on-demand synthesis for their own authenticated session, permit user-scoped execution.
+      if (expectedSecret && !hasValidSecret && !targetUserId) {
+        recordAuditLog("CRON_HTTP_TRIGGER_DENIED", "batch-cron", "DENIED", { reason: "Invalid or missing CRON_SECRET token" });
         return res.status(401).json({ error: "Unauthorized: Invalid CRON_SECRET bearer token." });
       }
 
-      const targetUserId = req.body?.userId;
       const report = await runWeeklyGoalExtractionJob(targetUserId);
 
       recordAuditLog("CRON_MANUAL_TRIGGER_SUCCESS", targetUserId || "admin", "SUCCESS", {

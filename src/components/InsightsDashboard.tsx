@@ -31,6 +31,7 @@ export const InsightsDashboard: React.FC<InsightsDashboardProps> = ({ entries, u
   const [isSynthesizing, setIsSynthesizing] = useState(false);
   const [weeklyGoals, setWeeklyGoals] = useState<WeeklyGoalRecord[]>([]);
   const [isTriggeringCron, setIsTriggeringCron] = useState(false);
+  const [isTestingDiscord, setIsTestingDiscord] = useState(false);
   const [cronFeedback, setCronFeedback] = useState<string | null>(null);
   const [cronStatus, setCronStatus] = useState<{
     cronSchedule: string;
@@ -79,6 +80,28 @@ export const InsightsDashboard: React.FC<InsightsDashboardProps> = ({ entries, u
       setCronFeedback(`⚠️ Network error: ${err.message}`);
     } finally {
       setIsTriggeringCron(false);
+    }
+  };
+
+  const handleTestDiscord = async () => {
+    setIsTestingDiscord(true);
+    setCronFeedback(null);
+    try {
+      const res = await fetch("/api/discord/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setCronFeedback("🚀 Verified! A test notification was successfully sent to your Discord channel.");
+      } else {
+        setCronFeedback(`⚠️ Discord test error: ${data.error || "Unable to send message to Discord."}`);
+      }
+    } catch (err: any) {
+      setCronFeedback(`⚠️ Network error communicating with Discord: ${err.message}`);
+    } finally {
+      setIsTestingDiscord(false);
     }
   };
 
@@ -311,11 +334,20 @@ ${summariesList}`;
             </div>
           </div>
 
-          <div className="flex items-center gap-2 self-start sm:self-auto">
-            {cronStatus?.discordWebhookConfigured && (
-              <span className="flex items-center gap-1.5 rounded bg-indigo-950/50 border border-indigo-500/30 px-2 py-1 text-[11px] font-mono text-indigo-300">
-                <Send className="h-3 w-3 text-indigo-400" />
-                Discord Webhook Armed
+          <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+            {cronStatus?.discordWebhookConfigured ? (
+              <button
+                onClick={handleTestDiscord}
+                disabled={isTestingDiscord}
+                title="Send a live test message to your Discord channel to verify connectivity"
+                className="flex items-center gap-1.5 rounded bg-indigo-950/60 border border-indigo-500/40 px-2.5 py-1.5 text-[11px] font-mono text-indigo-300 hover:bg-indigo-900/50 transition active:scale-95 disabled:opacity-50"
+              >
+                <Send className={`h-3 w-3 text-indigo-400 ${isTestingDiscord ? "animate-pulse" : ""}`} />
+                {isTestingDiscord ? "Dispatching..." : "Test Discord Dispatch"}
+              </button>
+            ) : (
+              <span className="flex items-center gap-1.5 rounded bg-amber-950/40 border border-amber-500/30 px-2 py-1 text-[11px] font-mono text-amber-300">
+                Discord Not Set
               </span>
             )}
             <button
