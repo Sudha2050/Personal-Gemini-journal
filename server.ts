@@ -175,11 +175,11 @@ async function generateWithExponentialBackoff(
     throw new Error("PREPAYMENT_DEPLETED");
   }
 
-  const primaryModel = params.model || "gemini-3.8-flash";
+  const primaryModel = params.model || "gemini-2.5-flash";
   // Fallback cascade using modern supported Gemini models
   const candidateModels = [
     primaryModel,
-    "gemini-3.8-flash",
+    "gemini-2.5-flash",
     "gemini-1.5-pro",
   ].filter((m, idx, arr) => arr.indexOf(m) === idx);
 
@@ -501,7 +501,7 @@ Return ONLY a valid JSON object matching this schema:
       let geminiResponse: any = null;
       try {
         geminiResponse = await generateWithExponentialBackoff(ai, {
-          model: "gemini-3.8-flash",
+          model: "gemini-2.5-flash",
           contents: [{ role: "user", parts: [{ text: prompt }] }],
           config: {
             responseMimeType: "application/json",
@@ -902,7 +902,7 @@ Never output dangerous, toxic, or self-harm content. If you identify stress, off
       let replyText = "";
       try {
         const response = await generateWithExponentialBackoff(ai, {
-          model: "gemini-3.8-flash",
+          model: "gemini-2.5-flash",
           contents: formattedContents,
           config: {
             systemInstruction,
@@ -991,7 +991,7 @@ Important: Return ONLY valid JSON. No markdown backticks or commentary.`;
       let response: any = null;
       try {
         response = await generateWithExponentialBackoff(ai, {
-          model: "gemini-3.8-flash",
+          model: "gemini-2.5-flash",
           contents: [{ role: "user", parts: [{ text: prompt }] }],
           config: {
             responseMimeType: "application/json",
@@ -1116,7 +1116,7 @@ Return ONLY a JSON array of strings:
 ["Prompt 1", "Prompt 2", "Prompt 3", "Prompt 4"]`;
 
       const response = await generateWithExponentialBackoff(ai, {
-        model: "gemini-3.8-flash",
+        model: "gemini-2.5-flash",
         contents: [{ role: "user", parts: [{ text: prompt }] }],
         config: {
           responseMimeType: "application/json",
@@ -1214,11 +1214,12 @@ Return ONLY a JSON array of strings:
       const expectedSecret = process.env.CRON_SECRET;
       const targetUserId = req.body?.userId;
 
-      // If a Bearer token or x-cron-secret was explicitly provided, validate it against expectedSecret if configured.
-      // Otherwise, allow on-demand execution (both user-scoped and manual testing) without blocking.
-      if (expectedSecret && authHeader && authHeader.startsWith("Bearer ") && authHeader !== `Bearer ${expectedSecret}`) {
+      // Allow on-demand execution from the UI. 
+      // Cloud Run or IAP may inject a Bearer token, so we only strictly block if they used x-cron-secret and it was wrong,
+      // OR if we explicitly want to require cron auth (which we don't for the UI).
+      if (expectedSecret && xCronSecret && xCronSecret !== expectedSecret) {
         recordAuditLog("CRON_HTTP_TRIGGER_DENIED", targetUserId || "cron", "DENIED", { reason: "Invalid CRON_SECRET token" });
-        return res.status(401).json({ error: "Unauthorized: Provided Bearer token does not match CRON_SECRET." });
+        return res.status(401).json({ error: "Unauthorized: Provided x-cron-secret does not match." });
       }
 
       const clientEntries = req.body?.entries;
@@ -1353,7 +1354,7 @@ Important: Return ONLY valid JSON.`;
       let response: any = null;
       try {
         response = await generateWithExponentialBackoff(ai, {
-          model: "gemini-3.8-flash",
+          model: "gemini-2.5-flash",
           contents: [{ role: "user", parts: [{ text: prompt }] }],
           config: {
             responseMimeType: "application/json",
@@ -1445,7 +1446,7 @@ Important: Return ONLY valid JSON.`;
       let response: any = null;
       try {
         response = await generateWithExponentialBackoff(ai, {
-          model: "gemini-3.8-flash",
+          model: "gemini-2.5-flash",
           contents: [{ role: "user", parts: [{ text: prompt }] }],
           config: {
             responseMimeType: "application/json",
@@ -1697,7 +1698,7 @@ Return ONLY a valid JSON object matching the required schema.`;
           let decisionRaw: any = null;
           try {
             decisionRaw = await generateWithExponentialBackoff(ai, {
-              model: "gemini-3.8-flash",
+              model: "gemini-2.5-flash",
               contents: [{ role: "user", parts: [{ text: decisionPrompt }] }],
               config: {
                 responseMimeType: "application/json",
@@ -1741,7 +1742,7 @@ STRICT CONSTRAINTS:
             let compositionRaw: any = null;
             try {
               compositionRaw = await generateWithExponentialBackoff(ai, {
-                model: "gemini-3.8-flash",
+                model: "gemini-2.5-flash",
                 contents: [{ role: "user", parts: [{ text: compositionPrompt }] }],
                 config: {
                   temperature: 0.4,

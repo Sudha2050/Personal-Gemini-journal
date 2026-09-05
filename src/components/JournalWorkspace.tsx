@@ -811,7 +811,7 @@ export const JournalWorkspace: React.FC<JournalWorkspaceProps> = ({
                 </span>
               ) : (
                 <span className="rounded-full bg-teal-950/60 border border-teal-500/30 px-2 py-0.5 text-[10px] font-semibold text-teal-300">
-                  gemini-3.8-flash
+                  gemini-2.5-flash
                 </span>
               )}
             </div>
