@@ -176,12 +176,11 @@ async function generateWithExponentialBackoff(
   }
 
   const primaryModel = params.model || "gemini-3.8-flash";
-  // Fallback cascade using modern supported Gemini models (gemini-3.8-flash, gemini-3.1-flash-lite, gemini-flash-latest)
+  // Fallback cascade using modern supported Gemini models
   const candidateModels = [
     primaryModel,
     "gemini-3.8-flash",
-    "gemini-3.1-flash-lite",
-    "gemini-flash-latest"
+    "gemini-1.5-pro",
   ].filter((m, idx, arr) => arr.indexOf(m) === idx);
 
   let lastError: any = null;
